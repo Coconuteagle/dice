@@ -17,6 +17,8 @@
       padding: 0;
       height: 100%;
       overflow: hidden;
+      touch-action: none;
+      background: #020617;
     }
 
     canvas {
@@ -44,6 +46,33 @@
       max-width: 320px;
     }
 
+
+    @media (max-width: 900px) {
+      .hud {
+        inset: 12px;
+        flex-direction: column;
+        gap: 12px;
+        font-size: 0.85rem;
+      }
+      .hud__panel {
+        max-width: 100%;
+      }
+      .status {
+        bottom: 18px;
+        padding: 10px 18px;
+        font-size: 0.9rem;
+      }
+    }
+
+    @media (max-width: 600px) {
+      .hud {
+        inset: 10px;
+        font-size: 0.8rem;
+      }
+      .status {
+        font-size: 0.85rem;
+      }
+    }
     .status {
       pointer-events: auto;
       position: fixed;
@@ -90,6 +119,7 @@
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
     document.body.appendChild(renderer.domElement);
+    renderer.domElement.style.touchAction = "none";
 
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.45);
     scene.add(ambientLight);
@@ -278,6 +308,16 @@
 
     const statusEl = document.getElementById("status");
     const readout = document.getElementById("readout");
+    let activePointerId = null;
+
+    const updateCameraFraming = () => {
+      const aspect = window.innerWidth / window.innerHeight;
+      const baseDistance = 7.2;
+      const distance = baseDistance + Math.max(0, 1 - aspect) * 2.8;
+      const height = distance * 0.72;
+      camera.position.set(distance * 0.85, height, distance);
+      camera.lookAt(0, wallHeight * 0.45, 0);
+    };
 
     const setStatus = (text, hold = false) => {
       statusEl.textContent = text;
@@ -310,6 +350,16 @@
     };
 
     const onPointerDown = (event) => {
+      if (!event.isPrimary || (activePointerId !== null && activePointerId !== event.pointerId)) return;
+      activePointerId = event.pointerId;
+      event.preventDefault();
+      if (typeof event.target.setPointerCapture === "function") {
+        try {
+          event.target.setPointerCapture(event.pointerId);
+        } catch (err) {
+          /* ignore */
+        }
+      }
       pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
       pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
       raycaster.setFromCamera(pointer, camera);
@@ -344,7 +394,8 @@
     };
 
     const onPointerMove = (event) => {
-      if (!isDragging) return;
+      if (!isDragging || event.pointerId !== activePointerId) return;
+      event.preventDefault();
       const target = clampToBox(pointerToPlane(event).add(dragOffset));
       target.y = dragPlaneHeight;
 
@@ -361,7 +412,14 @@
     };
 
     const onPointerUp = (event) => {
-      if (!isDragging) return;
+      if (!isDragging || (activePointerId !== null && event.pointerId !== activePointerId)) return;
+      if (event.target && typeof event.target.releasePointerCapture === "function") {
+        try {
+          event.target.releasePointerCapture(event.pointerId);
+        } catch (err) {
+          /* ignore */
+        }
+      }
       isDragging = false;
 
       const releasePoint = clampToBox(pointerToPlane(event).add(dragOffset));
@@ -451,11 +509,13 @@
       }
 
       movementHistory = [];
+      activePointerId = null;
     };
 
-    window.addEventListener("pointerdown", onPointerDown);
+    renderer.domElement.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerUp);
     window.addEventListener("pointerleave", onPointerUp);
 
     const clock = new THREE.Clock();
@@ -478,6 +538,7 @@
       renderer.render(scene, camera);
     };
 
+    updateCameraFraming();
     animate();
 
     const onResize = () => {
@@ -485,6 +546,7 @@
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      updateCameraFraming();
     };
 
     window.addEventListener("resize", onResize);
