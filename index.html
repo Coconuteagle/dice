@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>인터랙티브 3D 주사위 박스</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: "Pretendard", "Segoe UI", system-ui, sans-serif;
+      background: #020617;
+      color: #e2e8f0;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    canvas {
+      display: block;
+    }
+
+    .hud {
+      position: fixed;
+      inset: 24px;
+      pointer-events: none;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      font-size: clamp(0.9rem, 1.4vw, 1rem);
+      color: rgba(226, 232, 240, 0.9);
+      text-shadow: 0 2px 12px rgba(15, 23, 42, 0.8);
+    }
+
+    .hud__panel {
+      backdrop-filter: blur(18px);
+      background: rgba(15, 23, 42, 0.55);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      border-radius: 18px;
+      padding: 16px 20px;
+      max-width: 320px;
+    }
+
+    .status {
+      pointer-events: auto;
+      position: fixed;
+      left: 50%;
+      bottom: 36px;
+      transform: translateX(-50%);
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      border-radius: 999px;
+      padding: 12px 24px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+  </style>
+</head>
+<body>
+  <div class="hud">
+    <div class="hud__panel">
+      <strong>사용 방법</strong>
+      <ol style="margin: 8px 0 0; padding-left: 20px; line-height: 1.6;">
+        <li>주사위를 클릭한 상태로 드래그해 원하는 방향으로 끌어올리세요.</li>
+        <li>마우스를 떼면 드래그 방향과 속도로 주사위가 날아갑니다.</li>
+        <li>벽과 바닥에 부딪히며 3D 박스 안에서 튕깁니다.</li>
+      </ol>
+    </div>
+    <div class="hud__panel" id="readout">대기 중...</div>
+  </div>
+  <div class="status" id="status">주사위를 잡아보세요.</div>
+
+  <script type="module">
+    import * as THREE from "./libs/three.module.js";
+    import * as CANNON from "./libs/cannon-es.js";
+
+    
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x030712);
+
+    const camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(6, 5.5, 6.5);
+    camera.lookAt(0, 1.25, 0);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.45);
+    scene.add(ambientLight);
+
+    const spot = new THREE.SpotLight(0xffffff, 1.1, 30, Math.PI / 6, 0.2, 1.2);
+    spot.position.set(6, 12, 4);
+    spot.castShadow = true;
+    spot.shadow.mapSize.set(1024, 1024);
+    scene.add(spot);
+
+    const hemi = new THREE.HemisphereLight(0x38bdf8, 0x020617, 0.4);
+    scene.add(hemi);
+
+    const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -9.82, 0) });
+    world.broadphase = new CANNON.NaiveBroadphase();
+    world.solver.iterations = 15;
+
+    const diceMaterial = new CANNON.Material('diceMaterial');
+    const surfaceMaterial = new CANNON.Material('surfaceMaterial');
+    const contactMaterial = new CANNON.ContactMaterial(diceMaterial, surfaceMaterial, {
+      friction: 0.18,
+      restitution: 0.55,
+    });
+    world.addContactMaterial(contactMaterial);
+    world.defaultContactMaterial.friction = 0.22;
+    world.defaultContactMaterial.restitution = 0.32;
+
+    const boxSize = 6;
+    const wallHeight = 3.6;
+    const ceilingHeight = wallHeight + 0.45;
+
+    const floorGeometry = new THREE.PlaneGeometry(boxSize, boxSize);
+    const floorMaterial = new THREE.MeshStandardMaterial({
+      color: 0x1e293b,
+      metalness: 0.1,
+      roughness: 0.8,
+    });
+    const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    scene.add(floor);
+
+    const floorBody = new CANNON.Body({
+      type: CANNON.Body.STATIC,
+      shape: new CANNON.Plane(),
+      material: surfaceMaterial,
+    });
+    floorBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
+    world.addBody(floorBody);
+
+    const ceilingBody = new CANNON.Body({
+      type: CANNON.Body.STATIC,
+      shape: new CANNON.Plane(),
+      material: surfaceMaterial,
+    });
+    ceilingBody.position.set(0, ceilingHeight, 0);
+    ceilingBody.quaternion.setFromEuler(Math.PI / 2, 0, 0);
+    world.addBody(ceilingBody);
+
+    const wallMaterial = new THREE.MeshStandardMaterial({
+      color: 0x0f172a,
+      metalness: 0.05,
+      roughness: 0.7,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.28,
+    });
+
+    const wallShape = new CANNON.Box(new CANNON.Vec3(boxSize / 2, wallHeight / 2, 0.15));
+    const createWall = (rotationY, position) => {
+      const wallGeometry = new THREE.PlaneGeometry(boxSize, wallHeight);
+      const material = wallMaterial.clone();
+      const isFrontWall = Math.abs(position.z - boxSize / 2) < 0.001;
+      if (isFrontWall) {
+        material.opacity = 0.08;
+      }
+      const mesh = new THREE.Mesh(wallGeometry, material);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.position.copy(position);
+      mesh.rotation.y = rotationY;
+      scene.add(mesh);
+
+      const body = new CANNON.Body({ type: CANNON.Body.STATIC, shape: wallShape, material: surfaceMaterial });
+      body.quaternion.setFromEuler(0, rotationY, 0);
+      body.position.copy(position);
+      world.addBody(body);
+    };
+
+    createWall(0, new THREE.Vector3(0, wallHeight / 2, -boxSize / 2));
+    createWall(Math.PI, new THREE.Vector3(0, wallHeight / 2, boxSize / 2));
+    createWall(Math.PI / 2, new THREE.Vector3(-boxSize / 2, wallHeight / 2, 0));
+    createWall(-Math.PI / 2, new THREE.Vector3(boxSize / 2, wallHeight / 2, 0));
+
+    const edgeGeometry = new THREE.BoxGeometry(boxSize, 0.08, 0.08);
+    const edgeMaterial = new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.35 });
+    const edgeX = new THREE.Mesh(edgeGeometry, edgeMaterial);
+    edgeX.position.set(0, wallHeight, boxSize / 2);
+    scene.add(edgeX.clone());
+    const edgeX2 = edgeX.clone();
+    edgeX2.position.set(0, wallHeight, -boxSize / 2);
+    scene.add(edgeX2);
+    const edgeZ = new THREE.Mesh(edgeGeometry, edgeMaterial);
+    edgeZ.geometry = edgeGeometry.clone();
+    edgeZ.rotation.y = Math.PI / 2;
+    edgeZ.position.set(boxSize / 2, wallHeight, 0);
+    scene.add(edgeZ.clone());
+    const edgeZ2 = edgeZ.clone();
+    edgeZ2.position.set(-boxSize / 2, wallHeight, 0);
+    scene.add(edgeZ2);
+
+    const createPipTexture = (value) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = 256;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#f8fafc";
+      ctx.fillRect(0, 0, 256, 256);
+      ctx.fillStyle = "#0f172a";
+      ctx.beginPath();
+      ctx.lineWidth = 12;
+      ctx.strokeStyle = "rgba(15, 23, 42, 0.1)";
+      ctx.strokeRect(18, 18, 256 - 36, 256 - 36);
+
+      const pipPositions = {
+        1: [[0, 0]],
+        2: [[-1, -1], [1, 1]],
+        3: [[-1, -1], [0, 0], [1, 1]],
+        4: [[-1, -1], [1, -1], [-1, 1], [1, 1]],
+        5: [[-1, -1], [1, -1], [0, 0], [-1, 1], [1, 1]],
+        6: [[-1, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [1, 1]],
+      };
+      const radius = 24;
+      pipPositions[value].forEach(([x, y]) => {
+        const cx = 128 + x * 72;
+        const cy = 128 + y * 72;
+        ctx.beginPath();
+        ctx.fillStyle = "#111827";
+        ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      return new THREE.CanvasTexture(canvas);
+    };
+
+    const diceMaterials = [
+      new THREE.MeshStandardMaterial({ map: createPipTexture(4), roughness: 0.4, metalness: 0.1 }),
+      new THREE.MeshStandardMaterial({ map: createPipTexture(2), roughness: 0.4, metalness: 0.1 }),
+      new THREE.MeshStandardMaterial({ map: createPipTexture(6), roughness: 0.4, metalness: 0.1 }),
+      new THREE.MeshStandardMaterial({ map: createPipTexture(1), roughness: 0.4, metalness: 0.1 }),
+      new THREE.MeshStandardMaterial({ map: createPipTexture(5), roughness: 0.4, metalness: 0.1 }),
+      new THREE.MeshStandardMaterial({ map: createPipTexture(3), roughness: 0.4, metalness: 0.1 }),
+    ];
+
+    const diceSize = 0.8;
+    const dragHoverHeight = Math.max(wallHeight - diceSize / 2 - 0.05, diceSize / 2 + 0.1);
+    const diceGeometry = new THREE.BoxGeometry(diceSize, diceSize, diceSize);
+    const diceMesh = new THREE.Mesh(diceGeometry, diceMaterials);
+    diceMesh.castShadow = true;
+    diceMesh.receiveShadow = true;
+    scene.add(diceMesh);
+
+    const DICE_MASS = 1;
+    const diceBody = new CANNON.Body({
+      mass: DICE_MASS,
+      shape: new CANNON.Box(new CANNON.Vec3(diceSize / 2, diceSize / 2, diceSize / 2)),
+      position: new CANNON.Vec3(0, 1, 0),
+      material: diceMaterial,
+      angularDamping: 0.04,
+      linearDamping: 0.02,
+    });
+    diceBody.allowSleep = true;
+    diceBody.sleepSpeedLimit = 0.12;
+    diceBody.sleepTimeLimit = 0.5;
+    world.addBody(diceBody);
+
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -diceBody.position.y);
+    const intersectPoint = new THREE.Vector3();
+
+    let isDragging = false;
+    let dragOffset = new THREE.Vector3();
+    let dragPlaneHeight = diceBody.position.y;
+    let movementHistory = [];
+    let statusTimeout = null;
+
+    const statusEl = document.getElementById("status");
+    const readout = document.getElementById("readout");
+
+    const setStatus = (text, hold = false) => {
+      statusEl.textContent = text;
+      if (statusTimeout) {
+        clearTimeout(statusTimeout);
+        statusTimeout = null;
+      }
+      if (!hold) {
+        statusTimeout = setTimeout(() => {
+          statusEl.textContent = "주사위를 잡아보세요.";
+        }, 2600);
+      }
+    };
+
+    const updateReadout = () => {
+      const { x, y, z } = diceBody.position;
+      const vel = diceBody.velocity.length().toFixed(2);
+      const ang = diceBody.angularVelocity.length().toFixed(2);
+      readout.innerHTML = `위치: (${x.toFixed(2)}, ${y.toFixed(2)}, ${z.toFixed(2)})<br />` +
+        `속도: ${vel} m/s · 회전: ${ang} rad/s`;
+    };
+
+    const pointerToPlane = (event) => {
+      pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
+      pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+      plane.set(new THREE.Vector3(0, 1, 0), -dragPlaneHeight);
+      const hit = raycaster.ray.intersectPlane(plane, intersectPoint);
+      return (hit ? intersectPoint : diceMesh.position).clone();
+    };
+
+    const onPointerDown = (event) => {
+      pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
+      pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+      const intersects = raycaster.intersectObject(diceMesh);
+      if (!intersects.length) return;
+
+      dragPlaneHeight = dragHoverHeight;
+      diceBody.position.y = dragPlaneHeight;
+      diceMesh.position.y = dragPlaneHeight;
+
+      const planePoint = pointerToPlane(event);
+      dragOffset.copy(diceBody.position).sub(planePoint);
+      isDragging = true;
+      diceBody.sleepState = 0;
+      diceBody.velocity.set(0, 0, 0);
+      diceBody.angularVelocity.set(0, 0, 0);
+      diceBody.type = CANNON.Body.KINEMATIC;
+      diceBody.mass = 0;
+      diceBody.updateMassProperties();
+      movementHistory = [{
+        time: performance.now(),
+        position: diceBody.position.clone(),
+      }];
+      setStatus("드래그 방향으로 던질 준비!", true);
+    };
+
+    const clampToBox = (position) => {
+      const limit = boxSize / 2 - diceSize / 2 - 0.05;
+      position.x = THREE.MathUtils.clamp(position.x, -limit, limit);
+      position.z = THREE.MathUtils.clamp(position.z, -limit, limit);
+      return position;
+    };
+
+    const onPointerMove = (event) => {
+      if (!isDragging) return;
+      const target = clampToBox(pointerToPlane(event).add(dragOffset));
+      target.y = dragPlaneHeight;
+
+      diceBody.position.copy(target);
+      diceBody.quaternion.copy(diceMesh.quaternion);
+
+      movementHistory.push({
+        time: performance.now(),
+        position: target.clone(),
+      });
+      if (movementHistory.length > 10) {
+        movementHistory.shift();
+      }
+    };
+
+    const onPointerUp = (event) => {
+      if (!isDragging) return;
+      isDragging = false;
+
+      const releasePoint = clampToBox(pointerToPlane(event).add(dragOffset));
+      releasePoint.y = dragPlaneHeight;
+      diceBody.position.copy(releasePoint);
+      diceMesh.position.copy(releasePoint);
+      movementHistory.push({ time: performance.now(), position: releasePoint.clone() });
+      if (movementHistory.length > 10) {
+        movementHistory.shift();
+      }
+
+      diceBody.type = CANNON.Body.DYNAMIC;
+      diceBody.mass = DICE_MASS;
+      diceBody.updateMassProperties();
+
+      if (movementHistory.length >= 2) {
+        const releaseEntry = movementHistory[movementHistory.length - 1];
+        let prevEntry = movementHistory[movementHistory.length - 2];
+
+        for (let i = movementHistory.length - 2; i >= 0; i--) {
+          const elapsed = (releaseEntry.time - movementHistory[i].time) / 1000;
+          if (elapsed >= 0.04 || i === 0) {
+            prevEntry = movementHistory[i];
+            break;
+          }
+        }
+
+        let dt = (releaseEntry.time - prevEntry.time) / 1000;
+        dt = Math.max(dt, 0.016);
+
+        const displacement = releaseEntry.position.clone().sub(prevEntry.position);
+        const horizontalMagnitude = Math.hypot(displacement.x, displacement.z);
+
+        if (horizontalMagnitude < 0.01) {
+          diceBody.velocity.set(0, -1.2, 0);
+          diceBody.angularVelocity.set(
+            (Math.random() - 0.5) * 4,
+            (Math.random() - 0.5) * 4,
+            (Math.random() - 0.5) * 4
+          );
+          setStatus("가볍게 놓았습니다.");
+        } else {
+          const velocity = displacement.divideScalar(dt);
+          const speed = velocity.length();
+          const rawHorizontal = Math.hypot(velocity.x, velocity.z);
+          const impulse = new CANNON.Vec3(
+            velocity.x * 3.1,
+            Math.min(Math.abs(speed) * 0.6 + 2.1, 3.1),
+            velocity.z * 3.1
+          );
+          const horizontalCap = 16;
+          const horizontalMag = Math.hypot(impulse.x, impulse.z);
+          if (horizontalMag > horizontalCap) {
+            const scale = horizontalCap / horizontalMag;
+            impulse.x *= scale;
+            impulse.z *= scale;
+          }
+          const maxVertical = 1.2 + Math.min(rawHorizontal * 0.35, 1.1);
+          impulse.y = Math.min(impulse.y, maxVertical);
+          diceBody.velocity.set(impulse.x, impulse.y, impulse.z);
+
+          const angularBase = new CANNON.Vec3(
+            (Math.random() - 0.5) * 12,
+            (Math.random() - 0.5) * 16,
+            (Math.random() - 0.5) * 12
+          );
+          const angularMotion = new CANNON.Vec3(
+            velocity.z * 1.6,
+            (Math.random() - 0.5) * 6,
+            -velocity.x * 1.6
+          );
+          diceBody.angularVelocity.set(
+            angularBase.x + angularMotion.x,
+            Math.min(angularBase.y + angularMotion.y, 18),
+            angularBase.z + angularMotion.z
+          );
+          setStatus("주사위 투척!");
+        }
+      } else {
+        diceBody.velocity.set(0, -1.2, 0);
+        diceBody.angularVelocity.set(
+          (Math.random() - 0.5) * 4,
+          (Math.random() - 0.5) * 4,
+          (Math.random() - 0.5) * 4
+        );
+        setStatus("가볍게 놓았습니다.");
+      }
+
+      movementHistory = [];
+    };
+
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointerleave", onPointerUp);
+
+    const clock = new THREE.Clock();
+    const fixedTimeStep = 1 / 60;
+    const maxSubSteps = 3;
+
+    const animate = () => {
+      requestAnimationFrame(animate);
+      const delta = clock.getDelta();
+      world.step(fixedTimeStep, delta, maxSubSteps);
+
+      if (!isDragging) {
+        diceMesh.position.copy(diceBody.position);
+        diceMesh.quaternion.copy(diceBody.quaternion);
+      } else {
+        diceMesh.position.copy(diceBody.position);
+      }
+
+      updateReadout();
+      renderer.render(scene, camera);
+    };
+
+    animate();
+
+    const onResize = () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    };
+
+    window.addEventListener("resize", onResize);
+
+    const resetDice = () => {
+      diceBody.position.set(0, 1.5, 0);
+      diceBody.velocity.set(0, 0, 0);
+      diceBody.angularVelocity.set(0, 0, 0);
+      diceBody.quaternion.setFromEuler(0, 0, 0);
+      diceMesh.position.copy(diceBody.position);
+      diceMesh.quaternion.copy(diceBody.quaternion);
+    };
+
+    window.addEventListener("keydown", (event) => {
+      if (event.code === "Space") {
+        resetDice();
+        setStatus("주사위를 초기 위치로 복귀했습니다.");
+      }
+    });
+  </script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
